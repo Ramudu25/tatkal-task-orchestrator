@@ -106,6 +106,98 @@ async function runTests() {
   assert.strictEqual(blockedTask.status, 'blocked');
   console.log('  ✔ Passed: Canceled task stopped and child marked as blocked.');
 
+  // Test 5: Dependency Resolution — Task Waits for Parent
+  console.log('\nTest 5: Dependency Resolution — Child Waits for Parent...');
+  db.prepare(`
+    INSERT INTO tasks (id, name, status, duration_ms, failure_rate, timeout_ms, max_retries, created_at, updated_at)
+    VALUES ('parent-task', 'Parent Task', 'waiting', 100, 0.0, 5000, 3, ?, ?)
+  `).run(now, now);
+
+  db.prepare(`
+    INSERT INTO tasks (id, name, status, duration_ms, failure_rate, timeout_ms, max_retries, created_at, updated_at)
+    VALUES ('child-task', 'Child Task', 'waiting', 100, 0.0, 5000, 3, ?, ?)
+  `).run(now + 1, now);
+
+  db.prepare("INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES ('child-task', 'parent-task')").run();
+
+  scheduler.tick();
+  await sleep(50);
+
+  // Child should still be waiting (parent is running)
+  const childBefore = db.prepare("SELECT status FROM tasks WHERE id = 'child-task'").get();
+  assert.strictEqual(childBefore.status, 'waiting', `Expected child to be waiting, got ${childBefore.status}`);
+  console.log('  ✔ Passed: Child task correctly waits for parent to complete.');
+
+  // Wait for parent to finish
+  await sleep(200);
+  const childAfter = db.prepare("SELECT status FROM tasks WHERE id = 'child-task'").get();
+  assert.strictEqual(childAfter.status, 'succeeded', `Expected child to be succeeded, got ${childAfter.status}`);
+  console.log('  ✔ Passed: Child task ran after parent succeeded.');
+
+  // Test 6: Crash Recovery — Interrupted Tasks Requeued
+  console.log('\nTest 6: Crash Recovery — Interrupted Tasks Requeued...');
+  db.prepare(`
+    INSERT INTO tasks (id, name, status, duration_ms, failure_rate, timeout_ms, max_retries, attempts, created_at, updated_at)
+    VALUES ('crash-task', 'Crash Task', 'running', 100, 0.0, 5000, 3, 1, ?, ?)
+  `).run(now, now);
+
+  // Simulate crash recovery
+  scheduler.recoverInterruptedTasks();
+  const recovered = db.prepare("SELECT status, attempts FROM tasks WHERE id = 'crash-task'").get();
+  assert.strictEqual(recovered.status, 'waiting', `Expected recovered task to be waiting, got ${recovered.status}`);
+  assert.strictEqual(recovered.attempts, 2, `Expected attempts to be incremented to 2, got ${recovered.attempts}`);
+  console.log('  ✔ Passed: Interrupted task requeued with incremented attempt count.');
+
+  // Test 7: Crash Recovery — Max Retries Exceeded
+  console.log('\nTest 7: Crash Recovery — Max Retries Exceeded...');
+  db.prepare(`
+    INSERT INTO tasks (id, name, status, duration_ms, failure_rate, timeout_ms, max_retries, attempts, created_at, updated_at)
+    VALUES ('crash-task-max', 'Crash Task Max', 'running', 100, 0.0, 5000, 2, 2, ?, ?)
+  `).run(now, now);
+
+  db.prepare(`
+    INSERT INTO tasks (id, name, status, duration_ms, failure_rate, timeout_ms, max_retries, created_at, updated_at)
+    VALUES ('crash-child', 'Crash Child', 'waiting', 100, 0.0, 5000, 3, ?, ?)
+  `).run(now + 1, now);
+
+  db.prepare("INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES ('crash-child', 'crash-task-max')").run();
+
+  scheduler.recoverInterruptedTasks();
+  const failedMax = db.prepare("SELECT status FROM tasks WHERE id = 'crash-task-max'").get();
+  const crashChild = db.prepare("SELECT status FROM tasks WHERE id = 'crash-child'").get();
+  assert.strictEqual(failedMax.status, 'failed', `Expected task to be failed, got ${failedMax.status}`);
+  assert.strictEqual(crashChild.status, 'blocked', `Expected child to be blocked, got ${crashChild.status}`);
+  console.log('  ✔ Passed: Task exceeding max retries marked failed, child blocked.');
+
+  // Test 8: Self-Dependency Rejection
+  console.log('\nTest 8: Self-Dependency Rejection...');
+  assert.throws(() => {
+    validateBatchDAG([
+      { id: 'self-dep', name: 'Self Dep', dependencies: ['self-dep'] }
+    ]);
+  }, /cannot depend on itself/);
+  console.log('  ✔ Passed: Self-dependency rejected.');
+
+  // Test 9: Duplicate Task ID Rejection
+  console.log('\nTest 9: Duplicate Task ID Rejection...');
+  assert.throws(() => {
+    validateBatchDAG([
+      { id: 'dup', name: 'First' },
+      { id: 'dup', name: 'Second' }
+    ]);
+  }, /Duplicate task ID/);
+  console.log('  ✔ Passed: Duplicate task ID rejected.');
+
+  // Test 10: Missing Dependency Rejection
+  console.log('\nTest 10: Missing Dependency Rejection...');
+  assert.throws(() => {
+    validateBatchDAG([
+      { id: 'orphan', name: 'Orphan', dependencies: ['nonexistent'] }
+    ]);
+  }, /does not exist/);
+  console.log('  ✔ Passed: Missing dependency rejected.');
+
+  db.close();
   cleanup();
   console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY!\n');
 }
