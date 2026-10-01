@@ -1,0 +1,11 @@
+node_modules/
+orchestrator.db
+orchestrator.db-journal
+orchestrator.db-wal
+orchestrator.db-shm
+test.db
+test.db-journal
+test.db-wal
+test.db-shm
+.DS_Store
+*.log

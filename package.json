@@ -1,0 +1,14 @@
+{
+  "name": "tatkal-task-orchestrator",
+  "version": "1.0.0",
+  "description": "Resilient DAG task runner with concurrency control, retries, and persistence",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2"
+  }
+}
